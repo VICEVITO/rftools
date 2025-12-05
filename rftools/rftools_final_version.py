@@ -1,4 +1,4 @@
-# esp32_ctf_tool_pyqt6.py
+# esp32_ctf_tool_pyqt6_v2.py
 import sys, json, threading, time, re
 from datetime import datetime
 from dateutil import tz
@@ -7,7 +7,7 @@ import serial.tools.list_ports
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QComboBox, QLabel, QLineEdit,
-    QGroupBox, QSpinBox, QFileDialog, QSplitter
+    QGroupBox, QSpinBox, QFileDialog, QScrollArea, QSizePolicy
 )
 from PyQt6.QtCore import Qt
 
@@ -97,12 +97,26 @@ class ESP32CTF(QWidget):
     def init_ui(self):
         main_layout = QHBoxLayout(self)
 
-        # Left panel (controls)
-        left_layout = QVBoxLayout()
+        # Scrollable left menu
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        scroll.setWidget(left_widget)
+        main_layout.addWidget(scroll, 0)
 
-        # Connection
-        group_conn = QGroupBox("Connection")
-        v_conn = QVBoxLayout()
+        # ---------------- Sections ----------------
+        # Helper to create collapsible group
+        def make_group(title, default_open=True):
+            g = QGroupBox(title)
+            g.setCheckable(True)
+            g.setChecked(default_open)
+            layout = QVBoxLayout()
+            g.setLayout(layout)
+            return g, layout
+
+        # ---------- Connection ----------
+        group_conn, v_conn = make_group("Connection", True)
         self.port_combo = QComboBox()
         btn_refresh = QPushButton("Refresh Ports")
         btn_connect = QPushButton("Connect")
@@ -113,15 +127,13 @@ class ESP32CTF(QWidget):
         h1.addWidget(btn_connect)
         v_conn.addLayout(h1)
         v_conn.addWidget(self.conn_status)
-        group_conn.setLayout(v_conn)
         left_layout.addWidget(group_conn)
 
         btn_refresh.clicked.connect(self.update_ports)
         btn_connect.clicked.connect(self.connect_serial)
 
-        # Mode
-        group_mode = QGroupBox("Mode")
-        v_mode = QVBoxLayout()
+        # ---------- Mode ----------
+        group_mode, v_mode = make_group("Mode", True)
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["IDLE","WIFI","BLE"])
         btn_set_mode = QPushButton("Set Mode")
@@ -131,14 +143,12 @@ class ESP32CTF(QWidget):
         h_mode.addWidget(btn_scan)
         v_mode.addWidget(self.mode_combo)
         v_mode.addLayout(h_mode)
-        group_mode.setLayout(v_mode)
         left_layout.addWidget(group_mode)
         btn_set_mode.clicked.connect(self.set_mode)
         btn_scan.clicked.connect(self.scan_once)
 
-        # WiFi
-        group_wifi = QGroupBox("WiFi Controls")
-        v_wifi = QVBoxLayout()
+        # ---------- WiFi ----------
+        group_wifi, v_wifi = make_group("WiFi Controls", False)
         self.wifi_ssid = QLineEdit()
         self.wifi_ssid.setPlaceholderText("SSID")
         self.wifi_pwd = QLineEdit()
@@ -154,16 +164,13 @@ class ESP32CTF(QWidget):
         h_wifi.addWidget(btn_wifi_status)
         h_wifi.addWidget(btn_wifi_disconnect)
         v_wifi.addLayout(h_wifi)
-        group_wifi.setLayout(v_wifi)
         left_layout.addWidget(group_wifi)
-
         btn_wifi_connect.clicked.connect(self.wifi_connect)
         btn_wifi_status.clicked.connect(self.wifi_status)
         btn_wifi_disconnect.clicked.connect(self.wifi_disconnect)
 
-        # BLE
-        group_ble = QGroupBox("BLE Controls")
-        v_ble = QVBoxLayout()
+        # ---------- BLE ----------
+        group_ble, v_ble = make_group("BLE Controls", False)
         self.ble_duration = QSpinBox()
         self.ble_duration.setRange(1000, 60000)
         self.ble_duration.setValue(5000)
@@ -180,16 +187,38 @@ class ESP32CTF(QWidget):
         h_ble.addWidget(btn_ble_connect)
         h_ble.addWidget(btn_ble_disconnect)
         v_ble.addLayout(h_ble)
-        group_ble.setLayout(v_ble)
         left_layout.addWidget(group_ble)
-
         btn_ble_scan.clicked.connect(self.ble_scan)
         btn_ble_connect.clicked.connect(self.ble_connect)
         btn_ble_disconnect.clicked.connect(self.ble_disconnect)
 
-        # Quick Tools
-        group_tools = QGroupBox("Quick Tools")
-        v_tools = QVBoxLayout()
+        # ---------- TCP / UDP ----------
+        group_net, v_net = make_group("TCP / UDP Tools", False)
+        self.tcp_host = QLineEdit()
+        self.tcp_host.setPlaceholderText("TCP Host")
+        self.tcp_port = QSpinBox()
+        self.tcp_port.setRange(1,65535)
+        self.tcp_port.setValue(1234)
+        btn_tcp_connect = QPushButton("TCP Connect")
+        btn_tcp_send = QPushButton("TCP Send")
+        self.tcp_send_data = QLineEdit()
+        self.tcp_send_data.setPlaceholderText("Data")
+        btn_tcp_close = QPushButton("TCP Close")
+        v_net.addWidget(self.tcp_host)
+        v_net.addWidget(self.tcp_port)
+        v_net.addWidget(self.tcp_send_data)
+        h_tcp = QHBoxLayout()
+        h_tcp.addWidget(btn_tcp_connect)
+        h_tcp.addWidget(btn_tcp_send)
+        h_tcp.addWidget(btn_tcp_close)
+        v_net.addLayout(h_tcp)
+        left_layout.addWidget(group_net)
+        btn_tcp_connect.clicked.connect(self.tcp_connect)
+        btn_tcp_send.clicked.connect(self.tcp_send)
+        btn_tcp_close.clicked.connect(self.tcp_close)
+
+        # ---------- Quick Tools ----------
+        group_tools, v_tools = make_group("Quick Tools", False)
         btn_get_logs = QPushButton("Get Logs")
         btn_clear_logs = QPushButton("Clear Logs")
         btn_export_logs = QPushButton("Export Logs")
@@ -202,17 +231,15 @@ class ESP32CTF(QWidget):
         h_export.addWidget(btn_export_logs)
         v_tools.addLayout(h_export)
         v_tools.addWidget(btn_search_flags)
-        group_tools.setLayout(v_tools)
         left_layout.addWidget(group_tools)
-
         btn_get_logs.clicked.connect(self.get_logs)
         btn_clear_logs.clicked.connect(self.clear_logs)
         btn_export_logs.clicked.connect(self.export_logs)
         btn_search_flags.clicked.connect(self.search_flags)
 
-        main_layout.addLayout(left_layout, 0)
+        left_layout.addStretch(1)
 
-        # Right panel (logs)
+        # ---------- Right panel logs ----------
         right_layout = QVBoxLayout()
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
@@ -229,7 +256,6 @@ class ESP32CTF(QWidget):
         logs_list.append(line)
         if len(logs_list) > LOG_MAX_LINES:
             logs_list.pop(0)
-        # format HTML for nicer readability
         html_line = s.replace("\n","<br>").replace("  ","&nbsp;&nbsp;")
         self.log_text.append(html_line)
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
@@ -316,6 +342,18 @@ class ESP32CTF(QWidget):
     def ble_disconnect(self):
         send_cmd_json({"cmd":"BLE_DISCONNECT"})
 
+    def tcp_connect(self):
+        host = self.tcp_host.text()
+        port = self.tcp_port.value()
+        send_cmd_json({"cmd":"TCP_CONNECT","host":host,"port":port})
+
+    def tcp_send(self):
+        data = self.tcp_send_data.text()
+        send_cmd_json({"cmd":"TCP_SEND","data":data})
+
+    def tcp_close(self):
+        send_cmd_json({"cmd":"TCP_CLOSE"})
+
     def get_logs(self):
         send_cmd_json({"cmd":"GET_LOGS"})
 
@@ -351,6 +389,5 @@ class ESP32CTF(QWidget):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     gui = ESP32CTF()
-    gui.show()  # <-- essentiel pour afficher la fenêtre
-    sys.exit(app.exec())  # ou app.exec() selon PyQt6
-
+    gui.show()
+    sys.exit(app.exec())
