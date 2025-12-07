@@ -1,4 +1,4 @@
-# esp32_ctf_tool_pyqt6_v2.py
+# esp32_ctf_tool_pyqt6_v2.py (FINAL avec Barre de Recherche)
 import sys, json, threading, time, re
 from datetime import datetime
 from dateutil import tz
@@ -20,7 +20,7 @@ LOG_MAX_LINES = 20000
 ser = None
 reader_thread = None
 reader_running = False
-logs_list = []
+logs_list = [] # Stocke les lignes brutes avec [Timestamp] pour la recherche
 
 # ---------- Helpers ----------
 def now_iso():
@@ -44,6 +44,9 @@ def send_cmd_json(obj):
     s = json.dumps(obj) + "\n"
     try:
         ser.write(s.encode("utf-8"))
+        # FIX: S'assurer que le log TX est enregistré ici pour la barre de recherche
+        # NOTE: Nous ne pouvons pas appeler gui.append_log car c'est une fonction globale. 
+        # Cela devrait être fait dans les méthodes de la classe ESP32CTF.
         return True
     except:
         return False
@@ -72,6 +75,7 @@ def serial_reader_loop(gui):
                         obj = json.loads(line)
                         gui.process_rx(obj)
                     except:
+                        # FIX: Appel mis à jour pour que le log soit formaté correctement
                         gui.append_log(f"<span style='color:gray'>[RAW]</span> {line}")
             else:
                 time.sleep(0.02)
@@ -106,7 +110,6 @@ class ESP32CTF(QWidget):
         main_layout.addWidget(scroll, 0)
 
         # ---------------- Sections ----------------
-        # Helper to create collapsible group
         def make_group(title, default_open=True):
             g = QGroupBox(title)
             g.setCheckable(True)
@@ -241,6 +244,23 @@ class ESP32CTF(QWidget):
 
         # ---------- Right panel logs ----------
         right_layout = QVBoxLayout()
+        
+        # AJOUT DE LA BARRE DE RECHERCHE
+        group_search = QGroupBox("Filter Logs by MAC/Text")
+        h_search = QHBoxLayout()
+        
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Search MAC Address or Text...")
+        btn_search_logs = QPushButton("Filter Logs")
+        
+        h_search.addWidget(self.search_input)
+        h_search.addWidget(btn_search_logs)
+        group_search.setLayout(h_search)
+        right_layout.addWidget(group_search)
+
+        btn_search_logs.clicked.connect(self.filter_logs)
+        # FIN DE L'AJOUT
+        
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setStyleSheet("background-color:#101014;color:#ccffff;font-family:Courier;font-size:12pt;")
@@ -248,33 +268,77 @@ class ESP32CTF(QWidget):
         right_layout.addWidget(self.log_text)
         main_layout.addLayout(right_layout, 1)
 
-    # ---------- Logging ----------
+    # ---------- Logging (CORRIGÉ pour enregistrer les logs dans logs_list) ----------
     def append_log(self, s):
         global logs_list
         t = now_iso()
-        line = f"[{t}] {s}"
+        
+        # Enregistre la ligne formatée [Timestamp] Log_Content (pour une recherche facile)
+        line = f"[{t}] {s}" 
         logs_list.append(line)
         if len(logs_list) > LOG_MAX_LINES:
             logs_list.pop(0)
-        html_line = s.replace("\n","<br>").replace("  ","&nbsp;&nbsp;")
+            
+        # Affiche le log dans le QTextEdit
+        html_line = f"[{t}] {s}".replace("\n","<br>").replace("  ","&nbsp;&nbsp;")
         self.log_text.append(html_line)
         self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
 
-    # ---------- RX Processing ----------
+    # ---------- RX Processing (CORRIGÉ pour envoyer des logs complets) ----------
     def process_rx(self, obj):
         t = obj.get("type")
         if t == "wifi_result":
             count = obj.get("count")
-            self.append_log(f"<b>[RX WIFI] Found {count} networks</b>")
+            log_msg = f"<b>[RX WIFI] Found {count} networks</b>"
+            self.append_log(log_msg)
             for e in obj.get("data", []):
                 self.append_log(f"<b>{e.get('ssid')}</b><br>&nbsp;&nbsp;RSSI={e.get('rssi')} BSSID={e.get('bssid')} CH={e.get('channel')}")
         elif t == "ble_result":
             count = obj.get("count")
-            self.append_log(f"<b>[RX BLE] Found {count} devices</b>")
+            log_msg = f"<b>[RX BLE] Found {count} devices</b>"
+            self.append_log(log_msg)
             for e in obj.get("data", []):
-                self.append_log(f"<b>{e.get('name') or e.get('addr')}</b><br>&nbsp;&nbsp;RSSI={e.get('rssi')} ADDR={e.get('addr')}")
+                name_display = e.get('name') if e.get('name') else e.get('addr') 
+                self.append_log(f"<b>{name_display}</b><br>&nbsp;&nbsp;RSSI={e.get('rssi')} ADDR={e.get('addr')}")
         else:
             self.append_log(f"<span style='color:cyan'>[RX]</span> {json.dumps(obj)}")
+
+    # ---------- Nouvelle Méthode de Filtrage ----------
+    def filter_logs(self):
+        """ Filtre l'historique des logs par MAC ou texte et affiche le résultat. """
+        query = self.search_input.text().strip()
+        self.log_text.clear()
+        
+        # Affiche tous les logs si la requête est vide
+        if not query:
+            full_log_html = []
+            for line in logs_list:
+                 t = line.split(']')[0][1:]
+                 s = ']'.join(line.split(']')[1:]).strip()
+                 s_clean = s.replace("\n","<br>").replace("  ","&nbsp;&nbsp;")
+                 full_log_html.append(f"[{t}] {s_clean}")
+                 
+            self.log_text.setText("<br>".join(full_log_html))
+            self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
+            self.append_log("<span style='color:yellow'>[UI] Affichage de tous les logs.</span>")
+            return
+
+        filtered_logs_html = []
+        
+        # Filtre la liste historique logs_list (recherche insensible à la casse)
+        query_upper = query.upper()
+        for line in logs_list:
+            if query_upper in line.upper():
+                # Reconstruit la ligne HTML pour l'affichage (avec le timestamp et le formatage)
+                t = line.split(']')[0][1:]
+                s = ']'.join(line.split(']')[1:]).strip()
+                s_clean = s.replace("\n","<br>").replace("  ","&nbsp;&nbsp;")
+                filtered_logs_html.append(f"[{t}] {s_clean}")
+        
+        self.log_text.setText("<br>".join(filtered_logs_html))
+        self.log_text.verticalScrollBar().setValue(self.log_text.verticalScrollBar().maximum())
+        self.append_log(f"<span style='color:yellow'>[UI] Found {len(filtered_logs_html)} entries matching '{query}'.</span>")
+
 
     # ---------- Serial ----------
     def update_ports(self):
@@ -308,58 +372,70 @@ class ESP32CTF(QWidget):
             self.append_log(f"<span style='color:red'>[UI]</span> Connect error: {e}")
             ser = None
 
-    # ---------- Commands ----------
+    # ---------- Commands (AJOUT DES LOGS TX MANQUANTS) ----------
     def set_mode(self):
         mode = self.mode_combo.currentText()
-        send_cmd_json({"cmd":"SET_MODE","mode":mode})
-        self.append_log(f"<span style='color:orange'>[UI]</span> Set mode -> {mode}")
+        if send_cmd_json({"cmd":"SET_MODE","mode":mode}):
+            self.append_log(f"<span style='color:orange'>[TX] SET_MODE -> {mode}</span>")
 
     def scan_once(self):
-        send_cmd_json({"cmd":"SCAN_ONCE"})
+        if send_cmd_json({"cmd":"SCAN_ONCE"}):
+            self.append_log(f"<span style='color:orange'>[TX] SCAN_ONCE command sent</span>")
 
     def wifi_connect(self):
         ssid = self.wifi_ssid.text()
         pwd = self.wifi_pwd.text()
-        send_cmd_json({"cmd":"WIFI_CONNECT","ssid":ssid,"pwd":pwd})
+        if send_cmd_json({"cmd":"WIFI_CONNECT","ssid":ssid,"pwd":pwd}):
+            self.append_log(f"<span style='color:orange'>[TX] WIFI_CONNECT to {ssid}</span>")
 
     def wifi_disconnect(self):
-        send_cmd_json({"cmd":"WIFI_DISCONNECT"})
+        if send_cmd_json({"cmd":"WIFI_DISCONNECT"}):
+            self.append_log(f"<span style='color:orange'>[TX] WIFI_DISCONNECT command sent</span>")
 
     def wifi_status(self):
-        send_cmd_json({"cmd":"WIFI_STATUS"})
+        if send_cmd_json({"cmd":"WIFI_STATUS"}):
+            self.append_log(f"<span style='color:orange'>[TX] WIFI_STATUS command sent</span>")
 
     def ble_scan(self):
         dur = self.ble_duration.value()
-        send_cmd_json({"cmd":"BLE_SCAN","duration_ms":dur})
+        if send_cmd_json({"cmd":"BLE_SCAN","duration_ms":dur}):
+            self.append_log(f"<span style='color:orange'>[TX] BLE_SCAN duration={dur}ms</span>")
 
     def ble_connect(self):
         addr = self.ble_addr.text()
         if not addr:
             self.append_log("<span style='color:red'>[UI]</span> BLE address required")
             return
-        send_cmd_json({"cmd":"BLE_CONNECT","addr":addr})
+        if send_cmd_json({"cmd":"BLE_CONNECT","addr":addr}):
+            self.append_log(f"<span style='color:orange'>[TX] BLE_CONNECT to {addr}</span>")
 
     def ble_disconnect(self):
-        send_cmd_json({"cmd":"BLE_DISCONNECT"})
+        if send_cmd_json({"cmd":"BLE_DISCONNECT"}):
+            self.append_log(f"<span style='color:orange'>[TX] BLE_DISCONNECT command sent</span>")
 
     def tcp_connect(self):
         host = self.tcp_host.text()
         port = self.tcp_port.value()
-        send_cmd_json({"cmd":"TCP_CONNECT","host":host,"port":port})
+        if send_cmd_json({"cmd":"TCP_CONNECT","host":host,"port":port}):
+            self.append_log(f"<span style='color:orange'>[TX] TCP_CONNECT to {host}:{port}</span>")
 
     def tcp_send(self):
         data = self.tcp_send_data.text()
-        send_cmd_json({"cmd":"TCP_SEND","data":data})
+        if send_cmd_json({"cmd":"TCP_SEND","data":data}):
+            self.append_log(f"<span style='color:orange'>[TX] TCP_SEND data: {data[:20]}...</span>")
 
     def tcp_close(self):
-        send_cmd_json({"cmd":"TCP_CLOSE"})
+        if send_cmd_json({"cmd":"TCP_CLOSE"}):
+            self.append_log(f"<span style='color:orange'>[TX] TCP_CLOSE command sent</span>")
 
     def get_logs(self):
-        send_cmd_json({"cmd":"GET_LOGS"})
+        if send_cmd_json({"cmd":"GET_LOGS"}):
+            self.append_log(f"<span style='color:orange'>[TX] GET_LOGS command sent</span>")
 
     def clear_logs(self):
-        send_cmd_json({"cmd":"CLEAR_LOGS"})
-        self.append_log("<span style='color:orange'>[UI]</span> Cleared logs on device")
+        if send_cmd_json({"cmd":"CLEAR_LOGS"}):
+            self.append_log(f"<span style='color:orange'>[TX] CLEAR_LOGS command sent</span>")
+        self.append_log("<span style='color:orange'>[UI] Cleared logs on device</span>")
 
     def export_logs(self):
         path = self.export_path.text()
@@ -391,3 +467,6 @@ if __name__ == "__main__":
     gui = ESP32CTF()
     gui.show()
     sys.exit(app.exec())
+
+
+#putty -serial COM11 -sercfg 115200,8,n,1,N
