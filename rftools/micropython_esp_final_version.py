@@ -1,4 +1,4 @@
-# main.py - MicroPython ESP32
+# main.py - MicroPython ESP32 (STABILISÉ contre le plantage mémoire BLE)
 import sys
 import ujson as json
 import time
@@ -119,9 +119,9 @@ def wifi_status():
     wlan = network.WLAN(network.STA_IF)
     return {"status": "ok", "connected": wlan.isconnected(), "ip": wlan.ifconfig()[0] if wlan.isconnected() else None}
 
-# --- BLE functions ---
+# --- BLE functions (STABILISÉ) ---
 _ble = None
-_ble_results = []
+_ble_results = {} # FIX: Dictionnaire pour la déduplication et la stabilité
 _IRQ_SCAN_RESULT = 5
 _IRQ_SCAN_DONE = 6
 
@@ -132,21 +132,28 @@ def _ble_irq(event, data):
             addr_type, addr, adv_type, rssi, adv_data = data
             addr_str = ":".join("{:02X}".format(b) for b in addr)
             name = None
+            
             try:
                 i = 0
-                b = adv_data
-                while i + 1 < len(b):
+                while i + 1 < len(adv_data):
                     length = b[i]
-                    if length == 0:
-                        break
-                    type_ = b[i + 1]
+                    if length == 0: break
+                    type_ = adv_data[i + 1]
                     if type_ in (0x08, 0x09):
-                        name = b[i + 2:i + 1 + length].decode('utf-8', 'ignore')
+                        name = adv_data[i + 2:i + 1 + length].decode('utf-8', 'ignore')
                         break
                     i += 1 + length
             except:
                 name = None
-            _ble_results.append({"addr": addr_str, "rssi": int(rssi), "name": name})
+            
+            # FIX: Utiliser le dictionnaire (clé = adresse MAC) pour la déduplication
+            if addr_str not in _ble_results:
+                 _ble_results[addr_str] = {"addr": addr_str, "rssi": int(rssi), "name": name}
+            else:
+                 _ble_results[addr_str]['rssi'] = int(rssi)
+                 if name:
+                     _ble_results[addr_str]['name'] = name
+                 
         elif event == _IRQ_SCAN_DONE:
             add_log({"event": "BLE_SCAN_DONE", "count": len(_ble_results)})
     except Exception as e:
@@ -157,21 +164,39 @@ def ble_scan_once(duration_ms=5000):
     if BLE is None:
         add_log({"error": "BLE_NOT_SUPPORTED"})
         return []
-    _ble_results = []
+    
+    # FIX: Vider le dictionnaire de résultats
+    _ble_results.clear()
+    
     try:
-        if _ble is None:
-            _ble = BLE()
+        # Reset explicite pour la stabilité
+        if _ble is not None:
+            try:
+                _ble.active(False)
+            except:
+                pass
+        _ble = BLE()
         _ble.active(True)
         _ble.irq(_ble_irq)
+        
+        # Le mode par défaut sans active=True est passif (le mode stable)
         add_log({"event": "BLE_SCAN_START", "duration_ms": duration_ms})
-        _ble.gap_scan(duration_ms, 30000, 30000)
+        
+        # FIX: Retrait des arguments 30000, 30000 qui causaient des erreurs de compatibilité
+        _ble.gap_scan(duration_ms) 
+        
         time.sleep_ms(duration_ms + 200)
+        
         try:
             _ble.active(False)
         except:
             pass
-        add_log({"event": "BLE_SCAN_RESULT", "count": len(_ble_results)})
-        return list(_ble_results)
+            
+        # FIX: Convertir les valeurs du dictionnaire en liste pour la sortie
+        out_list = list(_ble_results.values())
+        add_log({"event": "BLE_SCAN_RESULT", "count": len(out_list)})
+        return out_list
+        
     except Exception as e:
         add_log({"event": "BLE_SCAN_ERROR", "err": str(e)})
         try:
@@ -238,7 +263,7 @@ def udp_setup(host, port):
 def udp_send(data):
     global _udp_socket, _udp_addr
     if not _udp_socket or not _udp_addr:
-        return {"status": "error", "msg": "not ready"}
+        return {"status": "error", "msg": "not connected"}
     try:
         _udp_socket.sendto(data.encode(), _udp_addr)
         add_log({"event": "UDP_SEND", "data": data})
@@ -364,8 +389,7 @@ while True:
         line = sys.stdin.readline()
         if line:
             handle_cmd(line.strip())
-        recv_loop()  # <-- lecture automatique TCP/UDP
+        recv_loop()
     except Exception as e:
         add_log({"event": "LOOP_ERR", "err": str(e)})
     time.sleep_ms(10)
-
